@@ -35,8 +35,6 @@ class OptimizedSparseMoE(nn.Module):
         # We initialize the output buffer
         final_output = torch.zeros_like(x)
 
-        # Instead of looping through every token, we loop through the 1024 experts.
-        # This is ~1,000x faster because most experts will handle many tokens at once.
         for i in range(self.num_experts):
             # Find which tokens in the entire batch were assigned to this specific expert
             mask = (selected_experts == i)
