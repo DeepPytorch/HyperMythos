@@ -1,0 +1,96 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+
+class OptimizedSparseMoE(nn.Module):
+    def __init__(self, d_model, num_experts, expert_hidden_dim, top_k=2):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        
+        # The Gate
+        self.gate = nn.Linear(d_model, num_experts)
+        
+        # Experts (1,024 experts @ 17.1B parameters each)
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, expert_hidden_dim, bias=False),
+                nn.GELU(),
+                nn.Linear(expert_hidden_dim, d_model, bias=False),
+            ) for _ in range(num_experts)
+        ])
+
+    def forward(self, x):
+        # x shape: (Batch, Seq_Len, d_model)
+        orig_shape = x.shape
+        x = x.view(-1, x.size(-1)) # Flatten to (Total_Tokens, d_model)
+        
+        # 1. Gating
+        gate_logits = self.gate(x)
+        weights, selected_experts = torch.topk(gate_logits, self.top_k, dim=-1)
+        weights = F.softmax(weights, dim=-1) # (Total_Tokens, top_k)
+
+        # 2. Vectorized Dispatching
+        # We initialize the output buffer
+        final_output = torch.zeros_like(x)
+
+        # Instead of looping through every token, we loop through the 1024 experts.
+        # This is ~1,000x faster because most experts will handle many tokens at once.
+        for i in range(self.num_experts):
+            # Find which tokens in the entire batch were assigned to this specific expert
+            mask = (selected_experts == i)
+            if not mask.any():
+                continue
+            
+            # token_indices tells us which tokens + which "k-slot" (0 or 1) matched expert i
+            token_indices, k_slots = torch.where(mask)
+            
+            # Run the expert on all assigned tokens at once
+            expert_out = self.experts[i](x[token_indices])
+            
+            # Multiply by the gate weight and add to output
+            final_output[token_indices] += weights[token_indices, k_slots].unsqueeze(-1) * expert_out
+
+        return final_output.view(*orig_shape)
+
+class LoopedTransformerMoE(nn.Module):
+    def __init__(
+        self,
+        vocab_size,
+        d_model=32768,
+        num_heads=64,
+        num_experts=1024,
+        expert_hidden_dim=262144, # 131072 * 2
+        loops=60,
+        max_seq_len=512,
+        dropout=0.1,
+    ):
+        super().__init__()
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = nn.Parameter(torch.zeros(1, max_seq_len, d_model))
+        
+        # Components
+        self.attention = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
+        self.moe_layer = OptimizedSparseMoE(d_model, num_experts, expert_hidden_dim, top_k=2)
+        
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.output_proj = nn.Linear(d_model, d_model)
+        self.loops = loops
+
+    def _loop_block(self, x):
+        # Attention with Residual
+        x = x + self.attention(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        
+        # MoE with Residual
+        x = x + self.output_proj(self.moe_layer(self.norm2(x)))
+        return x
+
+    def forward(self, input_ids):
+        x = self.token_embedding(input_ids)
+        x = x + self.position_embedding[:, :input_ids.size(1), :]
+        
+        for _ in range(self.loops):
+            x = self._loop_block(x)
+        return x
