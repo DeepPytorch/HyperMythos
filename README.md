@@ -7,3 +7,4 @@ When a model of this size (17.6 Trillion parameters) is trained, it picks up on 
 This model uses a looped transfomer MoE, a seperate network to act as a router, and a a AI designed to determine each token's complexity to allow the easier tokens to exit early, and the more difficult tokens to stay in the model for longer, allowing the model to "think" on it longer.
 # Why It should Never be Trained Without Extreme Safety Features
 IF THIS MODEL IS EVER TRAINED, IT WILL POSSIBLY BE, IN ALL PRACTICAL FORMS, NARROW AI SUPERINTELLGENCE. THIS MODEL IS EXTREMELY DANGEROUS BECAUSE OF THIS, AND THUS SHOULD NEVER BE TRAINED WITH OUT THE MOST EXTREME AND MAXIMUM SAFETY FEATURES.
+(This AI is based off Mythos, just extremely powerful.)
